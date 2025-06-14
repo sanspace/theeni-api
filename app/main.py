@@ -1,6 +1,7 @@
 # app/main.py
 
 from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 from psycopg_pool import AsyncConnectionPool
 
@@ -17,7 +18,6 @@ async def lifespan(app: FastAPI):
     # Create the pool instance
     pool = AsyncConnectionPool(conninfo=settings.DATABASE_URL, min_size=1, max_size=10)
     
-    # **FIX 1: Explicitly open the pool as recommended by the warning**
     await pool.open() 
     
     app.state.pool = pool
@@ -29,12 +29,24 @@ async def lifespan(app: FastAPI):
     await app.state.pool.close()
     print("Database connection pool closed.")
 
+origins = [
+    "http://localhost:5173", # The default Vite dev server port
+    "http://127.0.0.1:5173",
+]
 
 app = FastAPI(
     title="Theeni POS API",
     description="Backend API for the Theeni Point-of-Sale application.",
     version="0.1.0",
     lifespan=lifespan
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["*"], # Allows all methods (GET, POST, etc.)
+    allow_headers=["*"], # Allows all headers
 )
 
 
@@ -58,7 +70,6 @@ async def get_items(request: Request):
             await cur.execute(query)
             records = await cur.fetchall()
 
-            # **FIX 2: Handle the case where the table is empty**
             if not records:
                 return []  # Return an empty list immediately if no items are found
 
