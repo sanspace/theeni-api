@@ -4,11 +4,13 @@ from datetime import date, timedelta
 from pydantic import BaseModel
 from typing import List
 
-from fastapi import FastAPI, Request, HTTPException
+from fastapi import FastAPI, Request, HTTPException, Depends, status
+from fastapi.security import OAuth2PasswordRequestForm
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 from psycopg_pool import AsyncConnectionPool
 
+from app import security
 from app.settings import settings
 
 class OrderItemCreate(BaseModel):
@@ -88,6 +90,31 @@ def read_root():
     """A simple root endpoint to confirm the API is running."""
     return {"message": "Welcome to Theeni API!"}
 
+@app.post("/token")
+async def login_for_access_token(
+    request: Request,
+    form_data: OAuth2PasswordRequestForm = Depends()
+):
+    """
+    Handles user login. Takes form data with 'username' and 'password'.
+    Returns a JWT access token if credentials are correct.
+    """
+    user = await security.get_user(form_data.username, request)
+    
+    if not user or not security.verify_password(form_data.password, user.hashed_password):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect username or password",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+        
+    # Create the token with user's username and role as the "subject"
+    access_token = security.create_access_token(
+        data={"sub": user.username, "role": user.role}
+    )
+    
+    return {"access_token": access_token, "token_type": "bearer"}
+
 
 @app.get("/api/v1/items")
 async def get_items(request: Request):
@@ -114,7 +141,11 @@ async def get_items(request: Request):
 
 
 @app.post("/api/v1/orders")
-async def create_order(order_data: OrderCreate, request: Request):
+async def create_order(
+    order_data: OrderCreate,
+    request: Request,
+    current_user: security.UserInDB = Depends(security.get_current_user)
+):
     """
     Receives order data from the frontend and saves it to the database.
     """
@@ -163,7 +194,11 @@ async def create_order(order_data: OrderCreate, request: Request):
             
 
 @app.post("/api/v1/items", status_code=201)
-async def add_item(item_data: ItemUpdate, request: Request): # We can reuse the ItemUpdate model
+async def add_item(
+    item_data: ItemUpdate,
+    request: Request,
+    current_user: security.UserInDB = Depends(security.get_current_admin_user)
+):
     """
     Adds a new item to the database.
     """
@@ -193,7 +228,12 @@ async def add_item(item_data: ItemUpdate, request: Request): # We can reuse the 
 
 
 @app.put("/api/v1/items/{item_id}")
-async def update_item(item_id: int, item_data: ItemUpdate, request: Request):
+async def update_item(
+    item_id: int,
+    item_data: ItemUpdate,
+    request: Request,
+    current_user: security.UserInDB = Depends(security.get_current_admin_user),
+):
     """
     Updates an existing item in the database.
     """
@@ -229,7 +269,11 @@ async def update_item(item_id: int, item_data: ItemUpdate, request: Request):
         
 
 @app.delete("/api/v1/items/{item_id}", status_code=200)
-async def delete_item(item_id: int, request: Request):
+async def delete_item(
+    item_id: int,
+    request: Request,
+    current_user: security.UserInDB = Depends(security.get_current_admin_user),
+):
     """
     Deletes an item from the database.
     """
@@ -249,7 +293,12 @@ async def delete_item(item_id: int, request: Request):
 
 
 @app.get("/api/v1/reports/sales", response_model=SalesReport)
-async def get_sales_report(request: Request, start_date: date, end_date: date):
+async def get_sales_report(
+    request: Request,
+    start_date: date,
+    end_date: date,
+    current_user: security.UserInDB = Depends(security.get_current_admin_user),
+):
     """
     Generates a sales report for a given date range.
     The end_date is exclusive (e.g., to get a full day, start_date=today, end_date=tomorrow).

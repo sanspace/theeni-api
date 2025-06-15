@@ -19,6 +19,9 @@ class Settings(BaseSettings):
     Application settings loaded from environment variables.
     """
     DATABASE_URL: str
+    SECRET_KEY: str
+    ALGORITHM: str = "HS256"
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24
     # It expects a comma-separated string, e.g., "http://url1.com,http://url2.com"
     ALLOWED_ORIGINS: str = ""
 
