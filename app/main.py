@@ -4,7 +4,7 @@ from datetime import date, timedelta
 from pydantic import BaseModel
 from typing import List
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 from psycopg_pool import AsyncConnectionPool
@@ -34,6 +34,13 @@ class ReportSummary(BaseModel):
 class SalesReport(BaseModel):
     summary: ReportSummary
     sales_by_item: List[ReportSalesByItem]
+
+class ItemUpdate(BaseModel):
+    name: str
+    quick_code: str | None
+    price: float
+    is_discount_eligible: bool
+    image_url: str | None
 
 
 @asynccontextmanager
@@ -155,6 +162,72 @@ async def create_order(order_data: OrderCreate, request: Request):
                 )
                 
                 return {"success": True, "order_id": order_id}
+            
+
+@app.post("/api/v1/items", status_code=201)
+async def add_item(item_data: ItemUpdate, request: Request): # We can reuse the ItemUpdate model
+    """
+    Adds a new item to the database.
+    """
+    pool = request.app.state.pool
+    async with pool.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                INSERT INTO items (name, quick_code, price, is_discount_eligible, image_url)
+                VALUES (%s, %s, %s, %s, %s)
+                RETURNING id;
+                """,
+                (
+                    item_data.name,
+                    item_data.quick_code,
+                    item_data.price,
+                    item_data.is_discount_eligible,
+                    item_data.image_url,
+                )
+            )
+            new_item_record = await cur.fetchone()
+            if not new_item_record:
+                raise HTTPException(status_code=500, detail="Failed to create item.")
+            
+            new_id = new_item_record[0]
+            return {"success": True, "item_id": new_id}
+
+
+@app.put("/api/v1/items/{item_id}")
+async def update_item(item_id: int, item_data: ItemUpdate, request: Request):
+    """
+    Updates an existing item in the database.
+    """
+    pool = request.app.state.pool
+    async with pool.connection() as conn:
+        async with conn.cursor() as cur:
+            # First, check if the item exists
+            await cur.execute("SELECT id FROM items WHERE id = %s;", (item_id,))
+            if cur.rowcount == 0:
+                raise HTTPException(status_code=404, detail=f"Item with id {item_id} not found.")
+
+            # If it exists, update it
+            await cur.execute(
+                """
+                UPDATE items
+                SET name = %s,
+                    quick_code = %s,
+                    price = %s,
+                    is_discount_eligible = %s,
+                    image_url = %s
+                WHERE id = %s;
+                """,
+                (
+                    item_data.name,
+                    item_data.quick_code,
+                    item_data.price,
+                    item_data.is_discount_eligible,
+                    item_data.image_url,
+                    item_id,
+                )
+            )
+            return {"success": True, "message": f"Item {item_id} updated."}
 
 
 @app.get("/api/v1/reports/sales", response_model=SalesReport)
