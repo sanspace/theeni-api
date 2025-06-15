@@ -64,10 +64,8 @@ async def lifespan(app: FastAPI):
     await app.state.pool.close()
     print("Database connection pool closed.")
 
-origins = [
-    "http://localhost:5173", # The default Vite dev server port
-    "http://127.0.0.1:5173",
-]
+origins = [origin.strip() for origin in settings.ALLOWED_ORIGINS.split(',')]
+
 
 app = FastAPI(
     title="Theeni POS API",

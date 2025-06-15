@@ -1,0 +1,16 @@
+# render.yaml
+# This file configures the deployment on Render.
+
+services:
+  - type: web
+    name: theeni
+    env: python
+    region: singapore # You can change this to a region closer to you
+    plan: free # Specifies the free instance type
+    
+    # Using the best practice 'uv sync' with our lock file
+    buildCommand: "uv sync --no-dev"
+    
+    # The command to start the web server
+    startCommand: "uvicorn app.main:app --host 0.0.0.0"
+
