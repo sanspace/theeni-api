@@ -228,6 +228,26 @@ async def update_item(item_id: int, item_data: ItemUpdate, request: Request):
                 )
             )
             return {"success": True, "message": f"Item {item_id} updated."}
+        
+
+@app.delete("/api/v1/items/{item_id}", status_code=200)
+async def delete_item(item_id: int, request: Request):
+    """
+    Deletes an item from the database.
+    """
+    pool = request.app.state.pool
+    async with pool.connection() as conn:
+        async with conn.cursor() as cur:
+            # First, check if the item exists to provide a better error message
+            await cur.execute("SELECT id FROM items WHERE id = %s;", (item_id,))
+            if cur.rowcount == 0:
+                raise HTTPException(status_code=404, detail=f"Item with id {item_id} not found.")
+
+            # If it exists, delete it
+            await cur.execute("DELETE FROM items WHERE id = %s;", (item_id,))
+            
+            # The ON DELETE SET NULL on order_items will handle existing orders
+            return {"success": True, "message": f"Item {item_id} deleted."}
 
 
 @app.get("/api/v1/reports/sales", response_model=SalesReport)
