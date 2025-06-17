@@ -120,6 +120,7 @@ app.add_middleware(
     allow_methods=["*"], # Allows all methods (GET, POST, etc.)
     allow_headers=["*"], # Allows all headers
 )
+print("Allowed Origing: ", origins)
 
 
 @app.get("/")
