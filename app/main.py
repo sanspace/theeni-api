@@ -1,6 +1,6 @@
 # app/main.py
 
-from datetime import date, timedelta
+from datetime import date, timedelta, datetime
 from pydantic import BaseModel
 from typing import List
 
@@ -22,6 +22,12 @@ class OrderCreate(BaseModel):
     cart: List[OrderItemCreate]
     discountPercentage: float
     customer_id: int | None = None
+
+class OrderDetail(BaseModel):
+    id: int
+    created_at: datetime
+    final_total: float
+    customer_name: str | None
 
 class ReportSalesByItem(BaseModel):
     id: int
@@ -56,6 +62,14 @@ class CustomerCreate(BaseModel):
     phone_number: str | None = None
     email: str | None = None
 
+class CustomerReportItem(BaseModel):
+    id: int
+    name: str
+    phone_number: str | None
+    email: str | None
+    total_orders: int
+    total_spent: float
+
 
 
 @asynccontextmanager
@@ -65,8 +79,18 @@ async def lifespan(app: FastAPI):
     """
     print("Application starting up...")
     
+    # Define a dictionary for connection-specific keyword arguments
+    conn_kwargs = {
+        "prepare_threshold": None  # This disables server-side prepared statements
+    }
+
     # Create the pool instance
-    pool = AsyncConnectionPool(conninfo=settings.DATABASE_URL, min_size=1, max_size=10)
+    pool = AsyncConnectionPool(
+        conninfo=settings.DATABASE_URL,
+        min_size=1,
+        max_size=10,
+        kwargs=conn_kwargs,
+    )
     
     await pool.open() 
     
@@ -385,3 +409,97 @@ async def search_customers(request: Request, q: str):
             )
             customer_records = await cur.fetchall()
             return [Customer(id=row[0], name=row[1], phone_number=row[2], email=row[3]) for row in customer_records]
+
+
+@app.get("/api/v1/reports/orders-details", response_model=List[OrderDetail])
+async def get_order_details_report(
+    request: Request,
+    start_date: date,
+    end_date: date,
+    current_user: security.UserInDB = Depends(security.get_current_admin_user)
+):
+    """
+    Fetches a detailed list of all orders within a date range.
+    """
+    pool = request.app.state.pool
+    end_date_exclusive = end_date + timedelta(days=1)
+
+    async with pool.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT
+                    o.id,
+                    o.created_at,
+                    o.final_total,
+                    c.name as customer_name
+                FROM orders o
+                LEFT JOIN customers c ON o.customer_id = c.id
+                WHERE o.created_at >= %s AND o.created_at < %s
+                ORDER BY o.created_at DESC;
+                """,
+                (start_date, end_date_exclusive)
+            )
+            order_records = await cur.fetchall()
+            return [
+                OrderDetail(
+                    id=row[0],
+                    created_at=row[1],
+                    final_total=float(row[2]),
+                    customer_name=row[3]
+                ) for row in order_records
+            ]
+
+
+
+@app.get("/api/v1/reports/customers", response_model=List[CustomerReportItem])
+async def get_customer_report(
+    request: Request,
+    start_date: date | None = None,
+    end_date: date | None = None,
+    current_user: security.UserInDB = Depends(security.get_current_admin_user)
+):
+    """
+    Generates a report of all customers and their order history.
+    If start_date and end_date are provided, it filters stats for that period.
+    """
+    pool = request.app.state.pool
+    
+    # This subquery calculates stats for the given date range.
+    # If no dates are given, it calculates lifetime stats.
+    stats_subquery = """
+        SELECT
+            customer_id,
+            COUNT(id) as total_orders,
+            SUM(final_total) as total_spent
+        FROM orders
+    """
+    params = []
+    if start_date and end_date:
+        end_date_exclusive = end_date + timedelta(days=1)
+        stats_subquery += " WHERE created_at >= %s AND created_at < %s"
+        params.extend([start_date, end_date_exclusive])
+    
+    stats_subquery += " GROUP BY customer_id"
+
+    # The main query joins the customers table with the calculated stats.
+    sql_query = f"""
+        SELECT
+            c.id, c.name, c.phone_number, c.email,
+            COALESCE(stats.total_orders, 0) as total_orders,
+            COALESCE(stats.total_spent, 0) as total_spent
+        FROM customers c
+        LEFT JOIN ({stats_subquery}) AS stats ON c.id = stats.customer_id
+        ORDER BY total_spent DESC;
+    """
+
+    async with pool.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(sql_query, tuple(params))
+            report_records = await cur.fetchall()
+            return [
+                CustomerReportItem(
+                    id=row[0], name=row[1], phone_number=row[2], email=row[3],
+                    total_orders=row[4], total_spent=float(row[5])
+                ) for row in report_records
+            ]
