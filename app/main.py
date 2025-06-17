@@ -21,6 +21,7 @@ class OrderItemCreate(BaseModel):
 class OrderCreate(BaseModel):
     cart: List[OrderItemCreate]
     discountPercentage: float
+    customer_id: int | None = None
 
 class ReportSalesByItem(BaseModel):
     id: int
@@ -43,6 +44,18 @@ class ItemUpdate(BaseModel):
     price: float
     is_discount_eligible: bool
     image_url: str | None
+
+class Customer(BaseModel):
+    id: int
+    name: str
+    phone_number: str | None
+    email: str | None
+
+class CustomerCreate(BaseModel):
+    name: str
+    phone_number: str | None = None
+    email: str | None = None
+
 
 
 @asynccontextmanager
@@ -141,47 +154,33 @@ async def get_items(request: Request):
 
 
 @app.post("/api/v1/orders")
-async def create_order(
-    order_data: OrderCreate,
-    request: Request,
-    current_user: security.UserInDB = Depends(security.get_current_user)
-):
-    """
-    Receives order data from the frontend and saves it to the database.
-    """
-    # CRITICAL: Always recalculate totals on the backend for security and accuracy.
+async def create_order(order_data: OrderCreate, request: Request, current_user: security.UserInDB = Depends(security.get_current_user)):
+    """Receives order data from the frontend and saves it to the database."""
     subtotal = sum(item.quantity * item.price for item in order_data.cart)
-    
     pool = request.app.state.pool
     
-    # Use a transaction to ensure all queries succeed or none do.
     async with pool.connection() as conn:
         async with conn.transaction():
             async with conn.cursor() as cur:
-                # 1. Insert into the 'orders' table
                 await cur.execute(
                     """
-                    INSERT INTO orders (subtotal, discount_percentage)
-                    VALUES (%s, %s)
+                    INSERT INTO orders (subtotal, discount_percentage, customer_id)
+                    VALUES (%s, %s, %s)
                     RETURNING id;
                     """,
-                    (subtotal, order_data.discountPercentage)
+                    (subtotal, order_data.discountPercentage, order_data.customer_id)
                 )
-                
                 order_id_record = await cur.fetchone()
                 if not order_id_record:
-                    # This would be a server error, FastAPI handles the response
                     raise HTTPException(status_code=500, detail="Failed to create order.")
                 
                 order_id = order_id_record[0]
                 
-                # 2. Prepare and insert all items into the 'order_items' table
                 order_items_data = [
                     (order_id, item.id, item.quantity, item.price)
                     for item in order_data.cart
                 ]
                 
-                # Use execute_many for efficient bulk insertion
                 await cur.executemany(
                     """
                     INSERT INTO order_items (order_id, item_id, quantity, price_per_unit)
@@ -356,3 +355,33 @@ async def get_sales_report(
             ]
             
             return SalesReport(summary=summary, sales_by_item=sales_by_item)
+
+
+@app.post("/api/v1/customers", response_model=Customer, status_code=201)
+async def create_customer(customer_data: CustomerCreate, request: Request):
+    """Creates a new customer."""
+    pool = request.app.state.pool
+    async with pool.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "INSERT INTO customers (name, phone_number, email) VALUES (%s, %s, %s) RETURNING id, name, phone_number, email;",
+                (customer_data.name, customer_data.phone_number, customer_data.email)
+            )
+            new_customer_record = await cur.fetchone()
+            if not new_customer_record:
+                raise HTTPException(status_code=500, detail="Failed to create customer.")
+            return Customer(id=new_customer_record[0], name=new_customer_record[1], phone_number=new_customer_record[2], email=new_customer_record[3])
+
+@app.get("/api/v1/customers/search", response_model=List[Customer])
+async def search_customers(request: Request, q: str):
+    """Searches for customers by name, phone number, or email."""
+    pool = request.app.state.pool
+    search_term = f"%{q}%"
+    async with pool.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "SELECT id, name, phone_number, email FROM customers WHERE name ILIKE %s OR phone_number LIKE %s OR email ILIKE %s LIMIT 10;",
+                (search_term, search_term, search_term)
+            )
+            customer_records = await cur.fetchall()
+            return [Customer(id=row[0], name=row[1], phone_number=row[2], email=row[3]) for row in customer_records]
