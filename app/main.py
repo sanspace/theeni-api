@@ -29,6 +29,11 @@ class OrderDetail(BaseModel):
     final_total: float
     customer_name: str | None
 
+class OrderHistoryItem(BaseModel):
+    id: int
+    created_at: datetime
+    final_total: float
+
 class ReportSalesByItem(BaseModel):
     id: int
     name: str
@@ -120,8 +125,6 @@ app.add_middleware(
     allow_methods=["*"], # Allows all methods (GET, POST, etc.)
     allow_headers=["*"], # Allows all headers
 )
-print("Allowed Origing: ", origins)
-
 
 @app.get("/")
 def read_root():
@@ -503,4 +506,50 @@ async def get_customer_report(
                     id=row[0], name=row[1], phone_number=row[2], email=row[3],
                     total_orders=row[4], total_spent=float(row[5])
                 ) for row in report_records
+            ]
+
+
+@app.delete("/api/v1/customers/{customer_id}", status_code=200)
+async def delete_customer(
+    customer_id: int,
+    request: Request,
+    current_user: security.UserInDB = Depends(security.get_current_admin_user)
+):
+    """Deletes a customer from the database. Associated orders will be kept but anonymized."""
+    pool = request.app.state.pool
+    async with pool.connection() as conn:
+        async with conn.cursor() as cur:
+            # Check if customer exists
+            await cur.execute("SELECT id FROM customers WHERE id = %s;", (customer_id,))
+            if cur.rowcount == 0:
+                raise HTTPException(status_code=404, detail="Customer not found.")
+            
+            # Delete the customer. The ON DELETE SET NULL on the orders table
+            # will automatically handle anonymizing their past orders.
+            await cur.execute("DELETE FROM customers WHERE id = %s;", (customer_id,))
+            return {"success": True, "message": f"Customer {customer_id} deleted."}
+
+
+@app.get("/api/v1/customers/{customer_id}/orders", response_model=List[OrderHistoryItem])
+async def get_customer_orders(
+    customer_id: int,
+    request: Request,
+    current_user: security.UserInDB = Depends(security.get_current_admin_user)
+):
+    """Fetches all past orders for a specific customer."""
+    pool = request.app.state.pool
+    async with pool.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT id, created_at, final_total FROM orders
+                WHERE customer_id = %s
+                ORDER BY created_at DESC;
+                """,
+                (customer_id,)
+            )
+            order_records = await cur.fetchall()
+            return [
+                OrderHistoryItem(id=row[0], created_at=row[1], final_total=float(row[2]))
+                for row in order_records
             ]
