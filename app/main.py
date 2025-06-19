@@ -29,6 +29,13 @@ class OrderDetail(BaseModel):
     final_total: float
     customer_name: str | None
 
+class OrderDetailLineItem(BaseModel):
+    id: int
+    item_name: str
+    quantity: float
+    price_per_unit: float
+    subtotal: float
+
 class OrderHistoryItem(BaseModel):
     id: int
     created_at: datetime
@@ -552,4 +559,40 @@ async def get_customer_orders(
             return [
                 OrderHistoryItem(id=row[0], created_at=row[1], final_total=float(row[2]))
                 for row in order_records
+            ]
+
+@app.get("/api/v1/orders/{order_id}/items", response_model=List[OrderDetailLineItem])
+async def get_order_line_items(
+    order_id: int,
+    request: Request,
+    current_user: security.UserInDB = Depends(security.get_current_admin_user)
+):
+    """Fetches all line items for a specific order."""
+    pool = request.app.state.pool
+    async with pool.connection() as conn:
+        async with conn.cursor() as cur:
+            # This query joins order_items with items to get the product name
+            await cur.execute(
+                """
+                SELECT
+                    oi.id,
+                    i.name as item_name,
+                    oi.quantity,
+                    oi.price_per_unit,
+                    oi.subtotal
+                FROM order_items oi
+                JOIN items i ON oi.item_id = i.id
+                WHERE oi.order_id = %s;
+                """,
+                (order_id,)
+            )
+            line_items = await cur.fetchall()
+            return [
+                OrderDetailLineItem(
+                    id=row[0],
+                    item_name=row[1],
+                    quantity=float(row[2]),
+                    price_per_unit=float(row[3]),
+                    subtotal=float(row[4])
+                ) for row in line_items
             ]
